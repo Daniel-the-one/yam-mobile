@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "110051295714",
+    "project_id": "projetyam-eddc1",
+    "storage_bucket": "projetyam-eddc1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:110051295714:android:e9944e02d19b164b6e79bb",
+        "android_client_info": {
+          "package_name": "com.monprojet.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBGiFKeWC6loFaOksN0A47zSca5BzblSKQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
