@@ -25,6 +25,9 @@ class CallService extends ChangeNotifier {
   final ApiClient _api;
 
   CallPhase phase = CallPhase.idle;
+  /// Utilisateur appelé pendant la phase d'offre. Le device exact n'est
+  /// connu qu'à la réception de l'answer.
+  String? targetUserId;
   String? remoteId;
   String? remoteName;
   bool micMuted = false;
@@ -57,22 +60,24 @@ class CallService extends ChangeNotifier {
   bool _answering = false;
   Timer? _ringTimeout;
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
+  final List<RTCIceCandidate> _pendingLocalCandidates = [];
 
   final AudioPlayer _ringtone = AudioPlayer();
 
   // ─────────────────────────── Appel sortant ───────────────────────────
 
-  Future<void> startOutgoing(String targetId, {bool video = false}) async {
+  Future<void> startOutgoing(String targetId, {String? targetName, bool video = false}) async {
     final clean = targetId.trim();
     if (phase != CallPhase.idle || clean.isEmpty) return;
     phase = CallPhase.calling;
-    remoteId = clean;
-    remoteName = clean;
+    targetUserId = clean;
+    remoteId = null;
+    remoteName = targetName ?? clean;
     videoEnabled = video;
     notifyListeners();
     try {
       final callId = await _api.ring(
-        toDeviceId: clean,
+        toUserId: clean,
         fromDeviceId: myDeviceId,
         fromUsername: myName,
         type: video ? 'video' : 'audio',
@@ -87,7 +92,7 @@ class CallService extends ChangeNotifier {
       final offer = await _pc!.createOffer(offerConstraints);
       await _pc!.setLocalDescription(offer);
       await _api.signal(
-        toDeviceId: clean,
+        toUserId: clean,
         fromDeviceId: myDeviceId,
         type: 'offer',
         callId: callId,
@@ -104,9 +109,10 @@ class CallService extends ChangeNotifier {
       // Le ring a déjà été envoyé : il faut annuler la sonnerie chez la cible
       // avec un bye, sinon elle sonne jusqu'à son propre timeout.
       final rid = remoteId;
-      if (rid != null && currentCallId != null) {
+      if ((rid != null || targetUserId != null) && currentCallId != null) {
         unawaited(_api.signal(
           toDeviceId: rid,
+          toUserId: rid == null ? targetUserId : null,
           fromDeviceId: myDeviceId,
           type: 'bye',
           callId: currentCallId,
@@ -198,16 +204,12 @@ class CallService extends ChangeNotifier {
 
     switch (type) {
       case 'offer':
-        final sdpMap = (payload['sdp'] as Map?)?.cast<String, dynamic>();
-        if (sdpMap == null || phase != CallPhase.incoming) return;
-        final desc = RTCSessionDescription(
-          sdpNormalise(sdpMap['sdp'] as String),
-          sdpMap['type'] as String,
-        );
+        final offer = _descriptionFromPayload(payload, fallbackType: 'offer');
+        if (offer == null || phase != CallPhase.incoming) return;
         if (_acceptRequested && !_answered && _pc != null) {
-          await _answer(desc);
+          await _answer(offer);
         } else {
-          _pendingOffer = desc; // bufferisé (pendant la sonnerie ou avant _pc)
+          _pendingOffer = offer; // bufferisé (pendant la sonnerie ou avant _pc)
         }
         break;
 
@@ -231,19 +233,18 @@ class CallService extends ChangeNotifier {
         break;
 
       case 'answer':
-        final sdpMap = (payload['sdp'] as Map?)?.cast<String, dynamic>();
+        final answer = _descriptionFromPayload(payload, fallbackType: 'answer');
         // Garde-fou : l'appelant peut renvoyer l'answer plusieurs fois (envois
         // répétés côté web). Un second setRemoteDescription ferait échouer
         // l'appel → on ignore toute answer une fois _answered.
-        if (_pc == null || sdpMap == null || _answered) return;
+        if (_pc == null || answer == null || _answered) return;
         try {
-          await _pc!.setRemoteDescription(
-            RTCSessionDescription(
-              sdpNormalise(sdpMap['sdp'] as String),
-              sdpMap['type'] as String,
-            ),
-          );
+          // Le premier answer révèle le device qui a décroché parmi les
+          // appareils de l'utilisateur cible.
+          remoteId = data['from_device_id']?.toString();
+          await _pc!.setRemoteDescription(answer);
           _answered = true;
+          await _flushLocalCandidates();
           _stopRing();
           await _drainCandidates();
           await Helper.setSpeakerphoneOn(speakerOn);
@@ -308,9 +309,10 @@ class CallService extends ChangeNotifier {
     final rid = remoteId;
     final rname = remoteName ?? rid ?? '';
     final wasInCall = phase == CallPhase.inCall;
-    if (rid != null) {
+    if (rid != null || targetUserId != null) {
       unawaited(_api.signal(
         toDeviceId: rid,
+        toUserId: rid == null ? targetUserId : null,
         fromDeviceId: myDeviceId,
         type: 'bye',
         callId: currentCallId,
@@ -345,12 +347,14 @@ class CallService extends ChangeNotifier {
     _answered = false;
     _answering = false;
     _pendingRemoteCandidates.clear();
+    _pendingLocalCandidates.clear();
     micMuted = false;
     speakerOn = true;
     cameraOn = false;
     videoEnabled = false;
     phase = CallPhase.idle;
     remoteId = null;
+    targetUserId = null;
     remoteName = null;
     currentCallId = null;
     notifyListeners();
@@ -419,20 +423,12 @@ class CallService extends ChangeNotifier {
     });
 
     pc.onIceCandidate = (cand) {
-      final rid = remoteId;
-      if (cand.candidate == null || rid == null) return;
-      unawaited(_api.signal(
-        toDeviceId: rid,
-        fromDeviceId: myDeviceId,
-        type: 'candidate',
-        payload: {
-          'candidate': {
-            'candidate': cand.candidate,
-            'sdpMid': cand.sdpMid,
-            'sdpMLineIndex': cand.sdpMLineIndex,
-          },
-        },
-      ));
+      if (cand.candidate == null) return;
+      if (remoteId == null) {
+        _pendingLocalCandidates.add(cand);
+      } else {
+        _sendCandidate(cand);
+      }
     };
 
     pc.onTrack = (event) {
@@ -495,6 +491,31 @@ class CallService extends ChangeNotifier {
     _pendingRemoteCandidates.clear();
   }
 
+  void _sendCandidate(RTCIceCandidate candidate) {
+    final rid = remoteId;
+    if (rid == null) return;
+    unawaited(_api.signal(
+      toDeviceId: rid,
+      fromDeviceId: myDeviceId,
+      type: 'candidate',
+      callId: currentCallId,
+      payload: {
+        'candidate': {
+          'candidate': candidate.candidate,
+          'sdpMid': candidate.sdpMid,
+          'sdpMLineIndex': candidate.sdpMLineIndex,
+        },
+      },
+    ));
+  }
+
+  Future<void> _flushLocalCandidates() async {
+    for (final candidate in List<RTCIceCandidate>.of(_pendingLocalCandidates)) {
+      _sendCandidate(candidate);
+    }
+    _pendingLocalCandidates.clear();
+  }
+
   /// Récupère l'offre SDP différée stockée par le serveur (GET
   /// /call/{call_id}/offer) quand elle n'a pas été reçue en temps réel.
   Future<RTCSessionDescription?> _fetchDeferredOffer() async {
@@ -505,11 +526,25 @@ class CallService extends ChangeNotifier {
       callId: callId,
       deviceId: myDeviceId,
     );
-    if (payload == null || payload['sdp'] == null) return null;
-    return RTCSessionDescription(
-      sdpNormalise(payload['sdp'] as String),
-      payload['type'] as String? ?? 'offer',
-    );
+    if (payload == null) return null;
+    return _descriptionFromPayload(payload, fallbackType: 'offer');
+  }
+
+  RTCSessionDescription? _descriptionFromPayload(
+    Map<String, dynamic> payload, {
+    required String fallbackType,
+  }) {
+    final rawSdp = payload['sdp'];
+    if (rawSdp is String && rawSdp.isNotEmpty) {
+      return RTCSessionDescription(sdpNormalise(rawSdp), payload['type']?.toString() ?? fallbackType);
+    }
+    if (rawSdp is Map) {
+      final nested = rawSdp.cast<String, dynamic>();
+      final sdp = nested['sdp']?.toString();
+      if (sdp == null || sdp.isEmpty) return null;
+      return RTCSessionDescription(sdpNormalise(sdp), nested['type']?.toString() ?? fallbackType);
+    }
+    return null;
   }
 
   Future<void> _startRingback() async {

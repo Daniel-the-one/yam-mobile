@@ -15,20 +15,25 @@ class ContactsScreen extends StatefulWidget {
 }
 
 class _ContactsScreenState extends State<ContactsScreen> {
-  final _nameCtrl = TextEditingController();
-  final _idCtrl = TextEditingController();
+  final _queryCtrl = TextEditingController();
+  List<Map<String, dynamic>> _results = [];
+  bool _searching = false;
 
   @override
   void dispose() {
-    _nameCtrl.dispose();
-    _idCtrl.dispose();
+    _queryCtrl.dispose();
     super.dispose();
   }
 
-  void _save() {
-    widget.app.addContact(_nameCtrl.text, _idCtrl.text);
-    _nameCtrl.clear();
-    _idCtrl.clear();
+  Future<void> _search() async {
+    final query = _queryCtrl.text.trim();
+    if (query.isEmpty) return;
+    setState(() => _searching = true);
+    try {
+      _results = await widget.app.searchUsers(query);
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
     FocusScope.of(context).unfocus();
   }
 
@@ -51,15 +56,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
       padding: const EdgeInsets.all(16),
       children: [
         TextField(
-          controller: _nameCtrl,
-          textInputAction: TextInputAction.next,
-          decoration: _deco('Nom du contact'),
-        ),
-        const SizedBox(height: 10),
-        TextField(
-          controller: _idCtrl,
-          style: mono(size: 14, color: YamColors.text),
-          decoration: _deco('device-a1b2c3d4', monoStyle: true),
+          controller: _queryCtrl,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => _search(),
+          decoration: _deco('Téléphone, nom ou nom d’utilisateur'),
         ),
         const SizedBox(height: 12),
         SizedBox(
@@ -70,12 +70,30 @@ class _ContactsScreenState extends State<ContactsScreen> {
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(borderRadius: kFieldRadius),
             ),
-            onPressed: _save,
-            icon: const Icon(Icons.person_add_alt_1, size: 18),
-            label: const Text('Enregistrer le contact',
+            onPressed: _searching ? null : _search,
+            icon: const Icon(Icons.search, size: 18),
+            label: Text(_searching ? 'Recherche…' : 'Rechercher un utilisateur',
                 style: TextStyle(fontWeight: FontWeight.w600)),
           ),
         ),
+        if (_results.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          ..._results.map((u) => _SearchUserTile(
+                user: u,
+                onAdd: () {
+                  widget.app.addContact(
+                    u['name']?.toString() ?? 'Inconnu',
+                    u['id'].toString(),
+                    phoneNumber: u['phone_number']?.toString(),
+                  );
+                  setState(() => _results = []);
+                },
+                onCall: () => widget.app.call.startOutgoing(
+                  u['id'].toString(),
+                  targetName: u['name']?.toString(),
+                ),
+              )),
+        ],
         const SizedBox(height: 24),
         if (app.contacts.isEmpty)
           const Padding(
@@ -120,20 +138,20 @@ class _ContactTile extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                         color: YamColors.text)),
                 const SizedBox(height: 4),
-                Text(contact.deviceId,
+                Text(contact.phoneNumber ?? 'Utilisateur #${contact.userId}',
                     style: mono(size: 13, color: YamColors.muted)),
               ],
             ),
           ),
           IconButton(
             tooltip: 'Appeler',
-            onPressed: () => app.call.startOutgoing(contact.deviceId),
+            onPressed: () => app.call.startOutgoing(contact.userId, targetName: contact.name),
             icon: const Icon(Icons.call_rounded, color: YamColors.accent),
           ),
           IconButton(
             tooltip: 'Appel vidéo',
             onPressed: () =>
-                app.call.startOutgoing(contact.deviceId, video: true),
+                app.call.startOutgoing(contact.userId, targetName: contact.name, video: true),
             icon: const Icon(Icons.videocam_rounded, color: YamColors.accent),
           ),
           IconButton(
@@ -145,4 +163,25 @@ class _ContactTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class _SearchUserTile extends StatelessWidget {
+  const _SearchUserTile({required this.user, required this.onAdd, required this.onCall});
+
+  final Map<String, dynamic> user;
+  final VoidCallback onAdd;
+  final VoidCallback onCall;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+        title: Text(user['name']?.toString() ?? 'Inconnu'),
+        subtitle: Text(user['phone_number']?.toString() ?? user['username']?.toString() ?? ''),
+        trailing: Wrap(
+          spacing: 4,
+          children: [
+            IconButton(onPressed: onAdd, icon: const Icon(Icons.person_add_alt_1)),
+            IconButton(onPressed: onCall, icon: const Icon(Icons.call)),
+          ],
+        ),
+      );
 }

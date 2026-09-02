@@ -15,6 +15,9 @@ class StorageService {
   static const _kServerUrl = 'server_url';
   static const _kContacts = 'contacts_v1';
   static const _kCalls = 'calls_v1';
+  static const _kAuthToken = 'auth_token';
+  static const _kUserId = 'user_id';
+  static const _kUserPhone = 'user_phone';
 
   Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
 
@@ -38,6 +41,32 @@ class StorageService {
 
   Future<void> saveUserName(String name) async =>
       (await _prefs).setString(_kUserName, name);
+
+  Future<String> loadAuthToken() async =>
+      (await _prefs).getString(_kAuthToken) ?? '';
+
+  Future<String> loadUserId() async =>
+      (await _prefs).getString(_kUserId) ?? '';
+
+  Future<void> saveSession({
+    required String token,
+    required String userId,
+    required String userName,
+    String? phoneNumber,
+  }) async {
+    final p = await _prefs;
+    await p.setString(_kAuthToken, token);
+    await p.setString(_kUserId, userId);
+    await p.setString(_kUserName, userName);
+    if (phoneNumber != null) await p.setString(_kUserPhone, phoneNumber);
+  }
+
+  Future<void> clearSession() async {
+    final p = await _prefs;
+    await p.remove(_kAuthToken);
+    await p.remove(_kUserId);
+    await p.remove(_kUserPhone);
+  }
 
   Future<String> loadServerUrl() async =>
       (await _prefs).getString(_kServerUrl) ?? defaultServerUrl;

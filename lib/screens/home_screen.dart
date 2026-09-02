@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 
-/// Accueil : identifiant de l'appareil + appel ponctuel par device id.
+/// Accueil : identité de l'appareil + appel ponctuel par utilisateur.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.app});
 
@@ -30,14 +30,22 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _call() {
+  Future<void> _call() async {
     FocusScope.of(context).unfocus();
-    widget.app.call.startOutgoing(_targetCtrl.text).catchError((Object e) {
+    try {
+      final users = await widget.app.searchUsers(_targetCtrl.text);
+      if (users.isEmpty) throw Exception('Aucun utilisateur trouvé.');
+      final user = users.first;
+      await widget.app.call.startOutgoing(
+        user['id'].toString(),
+        targetName: user['name']?.toString() ?? user['phone_number']?.toString(),
+      );
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Échec de l'appel : $e")),
       );
-    });
+    }
   }
 
   void _editName() async {
@@ -129,7 +137,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: _targetCtrl,
           style: mono(size: 15, color: YamColors.text),
           decoration: InputDecoration(
-            hintText: 'device-a1b2c3d4',
+            hintText: 'Téléphone, nom ou nom d’utilisateur',
             hintStyle: mono(size: 15),
             filled: true,
             fillColor: YamColors.surface,

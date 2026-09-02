@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'screens/home_shell.dart';
+import 'screens/auth_screen.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 
@@ -33,7 +34,12 @@ class YamApp extends StatelessWidget {
           error: YamColors.danger,
         ),
       ),
-      home: HomeShell(app: app),
+      home: ListenableBuilder(
+        listenable: app,
+        builder: (context, _) => app.isAuthenticated
+            ? HomeShell(app: app)
+            : AuthScreen(app: app),
+      ),
     );
   }
 }

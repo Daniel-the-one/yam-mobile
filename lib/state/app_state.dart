@@ -15,7 +15,10 @@ import '../services/storage_service.dart';
 /// État global de l'application : identité, connexion, contacts, historique.
 class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final storage = StorageService();
-  late final ApiClient api = ApiClient(() => serverUrl);
+  late final ApiClient api = ApiClient(
+    () => serverUrl,
+    tokenProvider: () => authToken,
+  );
   final signaling = SignalingService();
   late final CallService call = CallService(api);
   final push = PushService();
@@ -23,6 +26,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   String serverUrl = StorageService.defaultServerUrl;
   String deviceId = '';
   String userName = '';
+  String userId = '';
+  String authToken = '';
   ConnStatus status = ConnStatus.disconnected;
   RuntimeConfig? runtimeConfig;
   List<Contact> contacts = [];
@@ -31,6 +36,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool _isReconnecting = false;
 
   int get missedCount => calls.where((c) => c.missed).length;
+  bool get isAuthenticated => authToken.isNotEmpty && userId.isNotEmpty;
 
   Future<void> init() async {
     WidgetsBinding.instance.addObserver(this);
@@ -39,6 +45,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {}
     deviceId = await storage.ensureDeviceId();
     userName = await storage.loadUserName();
+    userId = await storage.loadUserId();
+    authToken = await storage.loadAuthToken();
     if (userName.isEmpty) {
       final suffix = deviceId.length > 4 ? deviceId.substring(deviceId.length - 4) : deviceId;
       userName = 'Appareil $suffix';
@@ -49,19 +57,6 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     calls = await storage.loadCalls();
     call.myDeviceId = deviceId;
     call.myName = userName;
-
-    // Notifications push (FCM) pour réveiller l'appareil hors application.
-    // Sans config Firebase, ça échoue silencieusement (le WebSocket reste
-    // le canal principal).
-    unawaited(push.init(
-      serverUrl: serverUrl,
-      deviceId: deviceId,
-      userName: userName,
-      onIncomingCall: call.handleIncomingCall,
-      // « Décrocher » sur l'écran CallKit natif → accepte directement l'appel
-      // (au lieu de re-sonner dans l'app et d'exiger un second tap).
-      onAcceptCall: call.accept,
-    ));
 
     signaling.onStatus = (s) {
       status = s;
@@ -78,13 +73,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     };
     call.addListener(notifyListeners);
 
-    await refreshRuntimeConfig();
-    await reconnect();
+    if (isAuthenticated) await _startAuthenticatedSession();
 
     // Reconnexion automatique périodique si l'appareil est déconnecté
     // (ex: changement de Wi-Fi, bascule 4G, perte temporaire de signal).
     _autoReconnectTimer = Timer.periodic(const Duration(seconds: 6), (_) {
-      if (status == ConnStatus.disconnected && !_isReconnecting && call.phase == CallPhase.idle) {
+      if (isAuthenticated && status == ConnStatus.disconnected && !_isReconnecting && call.phase == CallPhase.idle) {
         debugPrint('[YAM][AUTO-RECONNECT] Tentative de reconnexion au serveur...');
         reconnect();
       }
@@ -95,7 +89,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       debugPrint('[YAM][LIFECYCLE] App au premier plan → vérification connexion');
-      if (status == ConnStatus.disconnected && call.phase == CallPhase.idle) {
+      if (isAuthenticated && status == ConnStatus.disconnected && call.phase == CallPhase.idle) {
         reconnect();
       }
     }
@@ -114,6 +108,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> reconnect() async {
+    if (!isAuthenticated) return;
     if (_isReconnecting) return;
     _isReconnecting = true;
     status = ConnStatus.connecting;
@@ -149,16 +144,99 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<void> login({
+    required String phoneNumber,
+    required String password,
+  }) async {
+    final result = await api.login(
+      phoneNumber: phoneNumber.trim(),
+      password: password,
+      deviceId: deviceId,
+      platform: 'android',
+      label: userName,
+    );
+    await _storeAuthenticatedSession(result);
+  }
+
+  Future<void> register({
+    required String name,
+    required String phoneNumber,
+    required String password,
+    String? username,
+  }) async {
+    final result = await api.register(
+      name: name.trim(),
+      phoneNumber: phoneNumber.trim(),
+      password: password,
+      deviceId: deviceId,
+      platform: 'android',
+      username: username?.trim(),
+    );
+    await _storeAuthenticatedSession(result);
+  }
+
+  Future<void> logout() async {
+    try {
+      await api.logout();
+    } catch (_) {
+      // Le nettoyage local reste nécessaire même si le serveur est injoignable.
+    }
+    await signaling.disconnect();
+    await storage.clearSession();
+    authToken = '';
+    userId = '';
+    status = ConnStatus.disconnected;
+    notifyListeners();
+  }
+
+  Future<void> _storeAuthenticatedSession(Map<String, dynamic> response) async {
+    final data = (response['data'] as Map?)?.cast<String, dynamic>() ?? response;
+    final user = (data['user'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final token = data['token']?.toString() ?? '';
+    final id = user['id']?.toString() ?? '';
+    if (token.isEmpty || id.isEmpty) throw Exception('Réponse d’authentification invalide.');
+    authToken = token;
+    userId = id;
+    userName = user['name']?.toString() ?? userName;
+    call.myName = userName;
+    await storage.saveSession(
+      token: token,
+      userId: id,
+      userName: userName,
+      phoneNumber: user['phone_number']?.toString(),
+    );
+    await _startAuthenticatedSession();
+    notifyListeners();
+  }
+
+  Future<void> _startAuthenticatedSession() async {
+    unawaited(push.init(
+      serverUrl: serverUrl,
+      deviceId: deviceId,
+      userName: userName,
+      onIncomingCall: call.handleIncomingCall,
+      onAcceptCall: call.accept,
+    ));
+    await refreshRuntimeConfig();
+    await reconnect();
+  }
+
+  Future<List<Map<String, dynamic>>> searchUsers(String query) async {
+    if (!isAuthenticated || query.trim().isEmpty) return [];
+    return api.searchUsers(query.trim());
+  }
+
   // ─────────────────────────── Contacts ────────────────────────────────
 
-  Future<void> addContact(String name, String devId) async {
+  Future<void> addContact(String name, String targetUserId, {String? phoneNumber}) async {
     final n = name.trim();
-    final d = devId.trim();
-    if (n.isEmpty || d.isEmpty) return;
+    final id = targetUserId.trim();
+    if (n.isEmpty || id.isEmpty) return;
     contacts.add(Contact(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: n,
-      deviceId: d,
+      userId: id,
+      phoneNumber: phoneNumber,
     ));
     await storage.saveContacts(contacts);
     notifyListeners();
