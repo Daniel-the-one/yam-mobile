@@ -30,7 +30,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _call() async {
+  Future<void> _call({bool video = false}) async {
     FocusScope.of(context).unfocus();
     try {
       final users = await widget.app.searchUsers(_targetCtrl.text);
@@ -39,6 +39,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await widget.app.call.startOutgoing(
         user['id'].toString(),
         targetName: user['name']?.toString() ?? user['phone_number']?.toString(),
+        video: video,
       );
     } catch (e) {
       if (!mounted) return;
@@ -149,18 +150,44 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         const SizedBox(height: 12),
-        SizedBox(
-          height: 46,
-          child: FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor: YamColors.text,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: kFieldRadius),
+        Row(
+          children: [
+            // Appel vocal
+            Expanded(
+              child: SizedBox(
+                height: 46,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: YamColors.text,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: kFieldRadius),
+                  ),
+                  onPressed: () => _call(video: false),
+                  icon: const Icon(Icons.call, size: 20),
+                  label: const Text('Appeler',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ),
             ),
-            onPressed: _call,
-            icon: const Icon(Icons.call, size: 20),
-            label: const Text('Appeler', style: TextStyle(fontWeight: FontWeight.w600)),
-          ),
+            const SizedBox(width: 10),
+            // Appel vidéo
+            Expanded(
+              child: SizedBox(
+                height: 46,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: YamColors.accent,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: kFieldRadius),
+                  ),
+                  onPressed: () => _call(video: true),
+                  icon: const Icon(Icons.videocam, size: 20),
+                  label: const Text('Vidéo',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );

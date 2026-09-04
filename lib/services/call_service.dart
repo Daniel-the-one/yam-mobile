@@ -258,8 +258,28 @@ class CallService extends ChangeNotifier {
         break;
 
       case 'bye':
-        if (remoteId != null && remoteId == data['from_device_id']) {
-          final rid = remoteId!;
+        // Un bye signifie que l'autre partie a raccroché ou refusé.
+        // Il faut le traiter MÊME si remoteId est null (appelant qui n'a pas
+        // encore reçu l'answer, ou appelé qui n'a pas encore répondu) :
+        // sinon l'appelant continue de sonner jusqu'à son propre timeout.
+        if (phase == CallPhase.idle) break;
+        final from = data['from_device_id']?.toString();
+        // Vérifie que le bye vient bien du correspondant courant, quand on le
+        // connaît.
+        if (remoteId != null && from != null && remoteId != from) break;
+        // Quand remoteId est null (pas encore d'answer), on protège contre un
+        // bye spoofé d'un autre device en vérifiant le call_id : le bye doit
+        // concerner notre appel courant.
+        if (remoteId == null) {
+          final byeCallId = data['call_id']?.toString();
+          if (byeCallId != null && byeCallId.isNotEmpty &&
+              currentCallId != null && byeCallId != currentCallId) {
+            break;
+          }
+          if (from == null) break;
+        }
+        {
+          final rid = remoteId ?? from ?? '';
           final rname = remoteName ?? rid;
           final wasInCall = phase == CallPhase.inCall;
           final wasIncoming = phase == CallPhase.incoming;
@@ -279,6 +299,13 @@ class CallService extends ChangeNotifier {
     // récupération différée (fetchDeferredOffer). Deux _answer entrelacés
     // feraient échouer le second setRemoteDescription → appel tué.
     if (_pc == null || _answered || _answering) return;
+    // Le device du correspondant doit être connu pour router l'answer.
+    final peerId = remoteId;
+    if (peerId == null) {
+      debugPrint('[YAM][CALL] _answer appelé sans remoteId → abandon');
+      await teardown();
+      return;
+    }
     _answering = true;
     try {
       await _pc!.setRemoteDescription(offer);
@@ -286,7 +313,7 @@ class CallService extends ChangeNotifier {
       final answer = await _pc!.createAnswer();
       await _pc!.setLocalDescription(answer);
       await _api.signal(
-        toDeviceId: remoteId!,
+        toDeviceId: peerId,
         fromDeviceId: myDeviceId,
         type: 'answer',
         payload: {
