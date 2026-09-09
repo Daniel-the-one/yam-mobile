@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
 
-/// Portail Sanctum : le mobile ne démarre ni Reverb ni les appels avant qu'une
-/// session par téléphone ait été créée.
+/// Portail Sanctum : le mobile ne démarre ni la signalisation ni les appels
+/// avant qu'une session par téléphone ait été créée.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key, required this.app});
 

@@ -8,13 +8,12 @@ import 'runtime_config.dart';
 
 enum ConnStatus { connecting, connected, disconnected }
 
-/// Signalisation temps réel via Reverb (protocole Pusher).
+/// Signalisation temps réel via Pusher.com (cluster).
 ///
-/// - La config (hôte, port, schéma, clé) est chargée à l'exécution depuis
+/// - La config (app_key + cluster) est chargée à l'exécution depuis
 ///   `/api/v1/config` (RuntimeConfig) et non plus codée en dur.
-/// - Le cluster n'est pas utilisé : on attaque l'hôte directement
-///   (`fromHost`, pas `fromCluster`).
-/// - HTTPS → wss:443 (mode tunnel), sinon ws:hôte:port fourni.
+/// - Le SDK construit automatiquement l'URL `wss://ws-{cluster}.pusher.com`
+///   via `fromCluster` (plus de gestion manuelle hôte/port/schéma).
 class SignalingService {
   PusherChannelsClient? _client;
   StreamSubscription<PusherChannelsClientLifeCycleState>? _lifecycleSub;
@@ -33,30 +32,19 @@ class SignalingService {
     // Trace complète du protocole Pusher (visible dans logcat).
     PusherChannelsPackageLogger.enableLogs();
 
-    final uri = Uri.parse(serverUrl);
-    final secure = uri.scheme == 'https';
-
     // Priorité à la config runtime du backend ; sinon valeurs par défaut.
-    // Le backend expose un schéma HTTP (http/https) : on le convertit en
-    // schéma WebSocket (ws/wss).
-    final rawScheme = config?.reverbScheme.isNotEmpty == true
-        ? config!.reverbScheme
-        : (secure ? 'https' : 'http');
-    final scheme = rawScheme == 'https' ? 'wss' : 'ws';
-    final host = config?.reverbHost.isNotEmpty == true
-        ? config!.reverbHost
-        : uri.host;
-    final port = config?.reverbPort ?? (secure ? 443 : 8080);
-    final key = config?.reverbKey.isNotEmpty == true ? config!.reverbKey : 'local';
+    final key = config?.pusherKey.isNotEmpty == true ? config!.pusherKey : 'local';
+    final cluster = config?.pusherCluster.isNotEmpty == true
+        ? config!.pusherCluster
+        : 'eu';
 
-    debugPrint('[YAM][WS] connexion Reverb → $scheme://$host:$port (clé $key)');
+    debugPrint('[YAM][WS] connexion Pusher.com → cluster $cluster (clé $key)');
 
     final client = PusherChannelsClient.websocket(
-      options: PusherChannelsOptions.fromHost(
-        scheme: scheme,
-        host: host,
+      options: PusherChannelsOptions.fromCluster(
+        scheme: 'wss',
+        cluster: cluster,
         key: key,
-        port: port,
       ),
       connectionErrorHandler: (exception, trace, refresh) => refresh(),
     );

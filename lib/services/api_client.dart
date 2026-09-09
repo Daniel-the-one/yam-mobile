@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer';
 
 import 'package:http/http.dart' as http;
 
@@ -26,7 +27,7 @@ class ApiClient {
     return Uri.parse('$base$path');
   }
 
-  /// Récupère la configuration runtime (Reverb + TURN) depuis le backend.
+  /// Récupère la configuration runtime (Pusher + TURN) depuis le backend.
   /// Retourne null si l'endpoint est injoignable ou illisible (l'app garde
   /// alors ses valeurs par défaut locales).
   Future<RuntimeConfig?> fetchConfig() async {
@@ -135,6 +136,9 @@ class ApiClient {
   /// [callId] : identifiant de l'appel, requis pour le stockage différé de
   /// l'offre côté serveur (type=offer) et l'invalidation au raccrochage
   /// (type=bye).
+  ///
+  /// Pour le type `bye`, effectue jusqu'à 3 tentatives avec backoff (500ms × tentative)
+  /// pour garantir la livraison même si le serveur est temporairement injoignable.
   Future<void> signal({
     String? toDeviceId,
     String? toUserId,
@@ -147,15 +151,35 @@ class ApiClient {
         (toUserId == null || toUserId.isEmpty)) {
       return;
     }
-    await _post('/api/v1/call/signal', {
-      if (toDeviceId != null && toDeviceId.isNotEmpty) 'to_device_id': toDeviceId,
-      if (toUserId != null && toUserId.isNotEmpty)
-        'to_user_id': int.tryParse(toUserId) ?? toUserId,
-      'from_device_id': fromDeviceId,
-      'type': type,
-      'payload': payload,
-      if (callId != null && callId.isNotEmpty) 'call_id': callId,
-    }, authenticated: true);
+
+    // Retry pour les signaux 'bye' (aligné sur le client web : 3 tentatives max)
+    final isBye = type == 'bye';
+    int attempt = 0;
+    const maxAttempts = 3;
+    const retryDelay = Duration(milliseconds: 500);
+
+    while (true) {
+      try {
+        await _post('/api/v1/call/signal', {
+          if (toDeviceId != null && toDeviceId.isNotEmpty) 'to_device_id': toDeviceId,
+          if (toUserId != null && toUserId.isNotEmpty)
+            'to_user_id': int.tryParse(toUserId) ?? toUserId,
+          'from_device_id': fromDeviceId,
+          'type': type,
+          'payload': payload,
+          if (callId != null && callId.isNotEmpty) 'call_id': callId,
+        }, authenticated: true);
+        return; // Succès
+      } catch (e) {
+        if (!isBye || attempt >= maxAttempts - 1) {
+          // Pas de retry pour les non-bye, ou dernière tentative échouée
+          rethrow;
+        }
+        attempt++;
+        print('[YAM][API] signal(bye) tentative $attempt échouée, retry dans ${retryDelay.inMilliseconds}ms : $e');
+        await Future.delayed(retryDelay * attempt); // backoff: 500ms, 1000ms, 1500ms
+      }
+    }
   }
 
   Future<List<Map<String, dynamic>>> searchUsers(String query) async {

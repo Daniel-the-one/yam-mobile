@@ -30,6 +30,9 @@ class CallService extends ChangeNotifier {
   String? targetUserId;
   String? remoteId;
   String? remoteName;
+  /// Identifiant utilisateur du correspondant (from_user_id), utile pour le
+  /// multi-appareils et l'historique. Peut être null si non fourni.
+  String? remoteUserId;
   bool micMuted = false;
   bool speakerOn = true;
   bool cameraOn = false;
@@ -45,7 +48,7 @@ class CallService extends ChangeNotifier {
   String myDeviceId = '';
   String myName = 'Moi';
 
-  /// Config runtime (Reverb + TURN) chargée depuis le backend.
+  /// Config runtime (Pusher + TURN) chargée depuis le backend.
   RuntimeConfig? config;
 
   /// Notifié à la fin d'un appel pour alimentation de l'historique.
@@ -59,6 +62,7 @@ class CallService extends ChangeNotifier {
   bool _answered = false;
   bool _answering = false;
   Timer? _ringTimeout;
+  Timer? _disconnectGraceTimeout;
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
   final List<RTCIceCandidate> _pendingLocalCandidates = [];
 
@@ -101,8 +105,9 @@ class CallService extends ChangeNotifier {
         },
       );
       unawaited(_startRingback());
-      // Si personne ne décroche jamais : on libère tout après 60 s.
-      _ringTimeout = Timer(const Duration(seconds: 60), () {
+      // Si personne ne décroche jamais : on libère tout après 45 s (aligné
+      // sur le client web éprouvé).
+      _ringTimeout = Timer(const Duration(seconds: 45), () {
         if (phase == CallPhase.calling) hangUp();
       });
     } catch (_) {
@@ -131,8 +136,12 @@ class CallService extends ChangeNotifier {
     if (phase != CallPhase.idle) return; // occupé : on ignore
     remoteId = data['from_device_id'] as String?;
     remoteName = (data['from_username'] as String?) ?? remoteId ?? 'Inconnu';
+    remoteUserId = data['from_user_id']?.toString();
     currentCallId = data['call_id'] as String?;
-    videoEnabled = (data['type'] as String?) == 'video';
+    // Le backend envoie `media` (audio|video) pour le type d'appel et `type`
+    // (incoming|reject|cancel) pour le type de notification. On lit `media`
+    // en premier avec repli sur `type` (aligné sur le client web).
+    videoEnabled = (data['media'] ?? data['type'] ?? 'audio') == 'video';
     phase = CallPhase.incoming;
     _pendingOffer = null;
     _acceptRequested = false;
@@ -181,13 +190,17 @@ class CallService extends ChangeNotifier {
     if (phase != CallPhase.incoming) return;
     final rid = remoteId;
     final rname = remoteName ?? rid ?? '';
-    if (rid != null) {
+    if (rid != null || remoteUserId != null) {
+      // Routage multi-appareils (aligné sur le web) : on envoie le bye au
+      // device exact quand on le connaît ET à l'utilisateur cible pour
+      // atteindre tous ses appareils (arrêt de la sonnerie partout).
       unawaited(_api.signal(
         toDeviceId: rid,
+        toUserId: remoteUserId,
         fromDeviceId: myDeviceId,
         type: 'bye',
         callId: currentCallId,
-        payload: {},
+        payload: {'reason': 'reject'},
       ).catchError((_) {}));
     }
     await teardown();
@@ -265,18 +278,20 @@ class CallService extends ChangeNotifier {
         if (phase == CallPhase.idle) break;
         final from = data['from_device_id']?.toString();
         // Vérifie que le bye vient bien du correspondant courant, quand on le
-        // connaît.
+        // connaît. Un bye d'un device tiers (autre appareil du destinataire
+        // qui décline pendant qu'un autre répond) est ignoré pour ne pas tuer
+        // l'appel en cours d'établissement.
         if (remoteId != null && from != null && remoteId != from) break;
         // Quand remoteId est null (pas encore d'answer), on protège contre un
         // bye spoofé d'un autre device en vérifiant le call_id : le bye doit
-        // concerner notre appel courant.
+        // concerner notre appel courant. Un bye legacy (sans from_device_id)
+        // est accepté tant que le call_id correspond (aligné sur le web).
         if (remoteId == null) {
           final byeCallId = data['call_id']?.toString();
           if (byeCallId != null && byeCallId.isNotEmpty &&
               currentCallId != null && byeCallId != currentCallId) {
             break;
           }
-          if (from == null) break;
         }
         {
           final rid = remoteId ?? from ?? '';
@@ -329,21 +344,25 @@ class CallService extends ChangeNotifier {
     }
   }
 
-  // ────────────────────────── Fin d'appel ──────────────────────────────
-
   Future<void> hangUp() async {
     if (phase == CallPhase.idle) return;
     final rid = remoteId;
     final rname = remoteName ?? rid ?? '';
     final wasInCall = phase == CallPhase.inCall;
-    if (rid != null || targetUserId != null) {
+    // Si on annule un appel sortant avant réponse, on prévient la cible
+    // (reason=cancel) pour qu'elle arrête de sonner.
+    final wasCalling = phase == CallPhase.calling;
+    if (rid != null || remoteUserId != null || targetUserId != null) {
+      // Routage multi-appareils (aligné sur le web) : on envoie le bye au
+      // device exact quand on le connaît ET à l'utilisateur cible pour
+      // atteindre tous ses appareils (arrêt de la sonnerie partout).
       unawaited(_api.signal(
         toDeviceId: rid,
-        toUserId: rid == null ? targetUserId : null,
+        toUserId: remoteUserId ?? targetUserId,
         fromDeviceId: myDeviceId,
         type: 'bye',
         callId: currentCallId,
-        payload: {},
+        payload: wasCalling ? {'reason': 'cancel'} : {},
       ).catchError((_) {}));
     }
     await teardown();
@@ -355,6 +374,8 @@ class CallService extends ChangeNotifier {
     _stopRing();
     unawaited(Vibration.cancel());
     _ringTimeout?.cancel();
+    _disconnectGraceTimeout?.cancel();
+    _disconnectGraceTimeout = null;
     try {
       await _pc?.close();
     } catch (_) {}
@@ -383,6 +404,7 @@ class CallService extends ChangeNotifier {
     remoteId = null;
     targetUserId = null;
     remoteName = null;
+    remoteUserId = null;
     currentCallId = null;
     notifyListeners();
   }
@@ -484,15 +506,24 @@ class CallService extends ChangeNotifier {
         // transitoires (Wi-Fi → 4G, rotation) sont fréquentes. Laisser le
         // temps à ICE de se reconnecter avant de tuer l'appel.
         // On capture `pc` (pas `_pc`) pour ne pas tuer un éventuel nouvel
-        // appel qui aurait remplacé `_pc` pendant les 5 s.
+        // appel qui aurait remplacé `_pc` pendant le délai.
+        // Le timer est tracké et annulé dès que l'appel reprend (connected)
+        // ou est libéré (teardown), sinon un appel valide serait tué par un
+        // délai de grâce résiduel (bug web corrigé, aligné ici : 5 s).
         final captured = pc;
-        Future.delayed(const Duration(seconds: 5), () {
+        _disconnectGraceTimeout?.cancel();
+        _disconnectGraceTimeout = Timer(const Duration(seconds: 5), () {
           if (identical(_pc, captured) &&
               captured.connectionState ==
                   RTCPeerConnectionState.RTCPeerConnectionStateDisconnected) {
             unawaited(teardown());
           }
         });
+      } else if (state ==
+          RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        // L'appel a repris : annule le délai de grâce en cours.
+        _disconnectGraceTimeout?.cancel();
+        _disconnectGraceTimeout = null;
       }
     };
 

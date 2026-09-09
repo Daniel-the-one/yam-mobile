@@ -1,24 +1,20 @@
 /// Configuration runtime chargée depuis `GET /api/v1/config`.
 ///
-/// Le backend expose les valeurs Reverb (host/port/scheme/clé) et TURN
+/// Le backend expose les valeurs Pusher.com (app_key + cluster) et TURN
 /// sans qu'elles soient codées en dur dans le client. Cela permet à l'app
 /// de fonctionner en LAN, en tunnel HTTPS et en production sans rebuild.
 class RuntimeConfig {
   const RuntimeConfig({
-    required this.reverbKey,
-    required this.reverbHost,
-    required this.reverbPort,
-    required this.reverbScheme,
+    required this.pusherKey,
+    required this.pusherCluster,
     required this.turnUrl,
     required this.turnUsername,
     required this.turnCredential,
     this.customIceServers,
   });
 
-  final String reverbKey;
-  final String reverbHost;
-  final int reverbPort;
-  final String reverbScheme;
+  final String pusherKey;
+  final String pusherCluster;
   final String turnUrl;
   final String turnUsername;
   final String turnCredential;
@@ -27,7 +23,7 @@ class RuntimeConfig {
   /// Retourne null si le payload est illisible (on garde alors les valeurs
   /// par défaut locales).
   factory RuntimeConfig.fromJson(Map<String, dynamic> json) {
-    final reverb = (json['reverb'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final pusher = (json['pusher'] as Map?)?.cast<String, dynamic>() ?? const {};
     final turn = (json['turn'] as Map?)?.cast<String, dynamic>() ?? const {};
     final rawIce = json['ice_servers'];
     List<Map<String, dynamic>>? parsedIce;
@@ -35,10 +31,8 @@ class RuntimeConfig {
       parsedIce = rawIce.whereType<Map>().map((m) => m.cast<String, dynamic>()).toList();
     }
     return RuntimeConfig(
-      reverbKey: (reverb['app_key'] as String?) ?? 'local',
-      reverbHost: (reverb['host'] as String?) ?? '',
-      reverbPort: (reverb['port'] as num?)?.toInt() ?? 8080,
-      reverbScheme: (reverb['scheme'] as String?) ?? 'ws',
+      pusherKey: (pusher['app_key'] as String?) ?? 'local',
+      pusherCluster: (pusher['cluster'] as String?) ?? 'eu',
       turnUrl: (turn['url'] as String?) ?? '',
       turnUsername: (turn['username'] as String?) ?? '',
       turnCredential: (turn['credential'] as String?) ?? '',

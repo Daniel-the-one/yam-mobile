@@ -20,14 +20,14 @@ void main() {
       final contact = Contact(
         id: '123',
         name: 'Damien',
-        deviceId: 'device-abc12345',
+        userId: 'user-abc12345',
       );
       final json = contact.toJson();
       final recovered = Contact.fromJson(json);
 
       expect(recovered.id, contact.id);
       expect(recovered.name, contact.name);
-      expect(recovered.deviceId, contact.deviceId);
+      expect(recovered.userId, contact.userId);
     });
   });
 
@@ -54,11 +54,9 @@ void main() {
   group('RuntimeConfig Parser', () {
     test('parse correctement la réponse du backend Laravel /api/v1/config', () {
       final json = {
-        'reverb': {
-          'app_key': 'local',
-          'host': '192.168.36.227',
-          'port': 6001,
-          'scheme': 'http',
+        'pusher': {
+          'app_key': '3db783706efc3d236b8a',
+          'cluster': 'eu',
         },
         'turn': {
           'url': 'turn:turn.example.com:3478',
@@ -68,10 +66,8 @@ void main() {
       };
 
       final config = RuntimeConfig.fromJson(json);
-      expect(config.reverbKey, 'local');
-      expect(config.reverbHost, '192.168.36.227');
-      expect(config.reverbPort, 6001);
-      expect(config.reverbScheme, 'http');
+      expect(config.pusherKey, '3db783706efc3d236b8a');
+      expect(config.pusherCluster, 'eu');
       expect(config.turnUrl, 'turn:turn.example.com:3478');
       expect(config.iceServers.length, 3);
       expect(config.iceServers[0]['urls'], [
