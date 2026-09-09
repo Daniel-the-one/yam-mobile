@@ -16,6 +16,16 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final data = message.data;
   if (!data.containsKey('call_id')) return;
 
+  // Type de notification : incoming (appel entrant) | reject | cancel.
+  // Seul `incoming` déclenche l'écran d'appel natif (CallKit). Les types
+  // reject/cancel servent à informer l'autre partie que l'appel a été
+  // rejeté/annulé (pas d'écran d'appel à afficher).
+  final pushType = data['type'] ?? 'incoming';
+  if (pushType != 'incoming') {
+    debugPrint('[YAM][PUSH][BG] Notification $pushType ignorée (pas un appel entrant)');
+    return;
+  }
+
   debugPrint('[YAM][PUSH][BG] Appel entrant en arrière-plan : ${data['from_username']}');
 
   try {
@@ -24,12 +34,13 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       nameCaller: data['from_username'] ?? 'Inconnu',
       appName: 'Yam',
       handle: data['from_username'] ?? 'Inconnu',
-      type: (data['type'] ?? 'audio') == 'video' ? 1 : 0,
+      type: (data['media'] ?? 'audio') == 'video' ? 1 : 0,
       extra: {
         'call_id': data['call_id'],
         'from_device_id': data['from_device_id'] ?? '',
         'from_username': data['from_username'] ?? 'Inconnu',
-        'type': data['type'] ?? 'audio',
+        'from_user_id': data['from_user_id'] ?? '',
+        'type': data['media'] ?? 'audio',
       },
     );
     await FlutterCallkitIncoming.showCallkitIncoming(params);
@@ -45,6 +56,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 /// Sans configuration Firebase (google-services.json), l'initialisation
 /// échoue silencieusement : le WebSocket reste le canal principal.
 class PushService {
+  /// URL du backend courante — mutable pour que le changement d'URL en cours
+  /// de session (dialog « Adresse du serveur ») ré-enregistre le device FCM
+  /// auprès du bon serveur. Référence mutable plutôt que paramètre capturé :
+  /// la closure [FirebaseMessaging.onTokenRefresh] garde l'URL à jour.
+  String _serverUrl = '';
+  String _deviceId = '';
+  String _userName = '';
+
   /// Initialise Firebase et enregistre le token FCM auprès du backend.
   /// Ne lève jamais d'exception : en cas d'échec, on journalise et on continue.
   Future<void> init({
@@ -54,8 +73,16 @@ class PushService {
     required void Function(Map<String, dynamic>) onIncomingCall,
     Future<void> Function()? onAcceptCall,
   }) async {
+    _serverUrl = serverUrl;
+    _deviceId = deviceId;
+    _userName = userName;
     try {
-      await Firebase.initializeApp();
+      // `initializeApp` ne peut être appelé qu'une fois par app Firebase :
+      // un second appel (changement d'URL en cours de session) lèverait
+      // une exception « already exists ».
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp();
+      }
     } catch (e) {
       debugPrint('[YAM][PUSH] Firebase non configuré, push désactivé : $e');
       return;
@@ -78,7 +105,7 @@ class PushService {
 
       if (token != null) {
         await registerDevice(
-          serverUrl: serverUrl,
+          serverUrl: _serverUrl,
           deviceId: deviceId,
           userName: userName,
           fcmToken: token,
@@ -89,7 +116,7 @@ class PushService {
       messaging.onTokenRefresh.listen((newToken) {
         debugPrint('[YAM][PUSH] Token FCM rafraîchi');
         registerDevice(
-          serverUrl: serverUrl,
+          serverUrl: _serverUrl,
           deviceId: deviceId,
           userName: userName,
           fcmToken: newToken,
@@ -99,7 +126,8 @@ class PushService {
       // Notification reçue quand l'app est au premier plan.
       FirebaseMessaging.onMessage.listen((message) {
         final data = message.data;
-        if (data.containsKey('call_id')) {
+        // Seul `incoming` déclenche un appel entrant (reject/cancel ignorés).
+        if (data.containsKey('call_id') && (data['type'] ?? 'incoming') == 'incoming') {
           debugPrint('[YAM][PUSH] Appel entrant (foreground) : ${data['from_username']}');
           onIncomingCall(data);
         }
@@ -108,7 +136,7 @@ class PushService {
       // Notification tapée quand l'app est en arrière-plan / fermée.
       FirebaseMessaging.onMessageOpenedApp.listen((message) {
         final data = message.data;
-        if (data.containsKey('call_id')) {
+        if (data.containsKey('call_id') && (data['type'] ?? 'incoming') == 'incoming') {
           debugPrint('[YAM][PUSH] Appel entrant (tap) : ${data['from_username']}');
           onIncomingCall(data);
         }
@@ -116,8 +144,9 @@ class PushService {
 
       // Appel entrant quand l'app a été lancée depuis une notification.
       final initial = await messaging.getInitialMessage();
-      if (initial?.data.containsKey('call_id') ?? false) {
-        debugPrint('[YAM][PUSH] Appel entrant (cold start) : ${initial!.data['from_username']}');
+      if ((initial?.data.containsKey('call_id') ?? false) &&
+          (initial!.data['type'] ?? 'incoming') == 'incoming') {
+        debugPrint('[YAM][PUSH] Appel entrant (cold start) : ${initial.data['from_username']}');
         onIncomingCall(initial.data);
       }
 
@@ -136,6 +165,7 @@ class PushService {
           'call_id': callId,
           'from_device_id': data['from_device_id'] ?? '',
           'from_username': data['from_username'] ?? 'Inconnu',
+          'from_user_id': data['from_user_id'] ?? '',
           'type': data['type'] ?? 'audio',
         });
         onAcceptCall?.call();
@@ -163,6 +193,7 @@ class PushService {
             'call_id': event.callKitParams.id,
             'from_device_id': extra['from_device_id'] ?? '',
             'from_username': extra['from_username'] ?? event.callKitParams.nameCaller ?? 'Inconnu',
+            'from_user_id': extra['from_user_id'] ?? '',
             'type': extra['type'] ?? 'audio',
           });
           // Accepte directement l'appel (au lieu de re-sonner dans l'app) :
@@ -190,6 +221,7 @@ class PushService {
     required String fromDeviceId,
     required String fromUsername,
     required String type,
+    String? fromUserId,
   }) async {
     try {
       final params = CallKitParams(
@@ -202,6 +234,7 @@ class PushService {
           'call_id': callId,
           'from_device_id': fromDeviceId,
           'from_username': fromUsername,
+          'from_user_id': fromUserId ?? '',
           'type': type,
         },
       );
@@ -218,6 +251,28 @@ class PushService {
       await FlutterCallkitIncoming.endCall(callId);
     } catch (e) {
       debugPrint('[YAM][PUSH] Erreur fin CallKit : $e');
+    }
+  }
+
+  /// Met à jour l'URL du backend et ré-enregistre le token FCM auprès du
+  /// nouveau serveur (changement d'URL en cours de session). Sans effet si
+  /// Firebase n'a jamais été initialisé (push désactivé).
+  Future<void> updateServerUrl(String url) async {
+    _serverUrl = url;
+    if (Firebase.apps.isEmpty) return;
+    try {
+      final messaging = FirebaseMessaging.instance;
+      final token = await messaging.getToken();
+      if (token != null) {
+        await registerDevice(
+          serverUrl: _serverUrl,
+          deviceId: _deviceId,
+          userName: _userName,
+          fcmToken: token,
+        );
+      }
+    } catch (e) {
+      debugPrint('[YAM][PUSH] Échec ré-enregistrement après changement d’URL : $e');
     }
   }
 

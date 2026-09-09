@@ -8,7 +8,14 @@ import '../models/missed_call.dart';
 
 /// Persistance locale : identité, URL serveur, contacts, historique.
 class StorageService {
-  static const defaultServerUrl = 'http://192.168.1.80:8000';
+  /// URL du serveur de production (web + API + config servis depuis le même
+  /// hôte). L'ancienne URL LAN (`http://192.168.1.80:8000`) est migrée
+  /// automatiquement vers celle-ci dans [loadServerUrl].
+  static const defaultServerUrl = 'https://yam.mdkrlabs.dev';
+
+  /// Ancienne URL par défaut (développement LAN) — utilisée uniquement pour
+  /// la migration des appareils déjà configurés.
+  static const _legacyDefaultServerUrl = 'http://192.168.1.80:8000';
 
   static const _kDeviceId = 'device_id';
   static const _kUserName = 'user_name';
@@ -68,11 +75,25 @@ class StorageService {
     await p.remove(_kUserPhone);
   }
 
-  Future<String> loadServerUrl() async =>
-      (await _prefs).getString(_kServerUrl) ?? defaultServerUrl;
+  Future<String> loadServerUrl() async {
+    final p = await _prefs;
+    final stored = p.getString(_kServerUrl);
+    // Migration : l'ancienne URL LAN par défaut est remplacée par la
+    // production. Les URLs personnalisées saisies par l'utilisateur sont
+    // conservées telles quelles. La comparaison est insensible aux variantes
+    // de l'ancienne URL (slash final, espaces) pour ne laisser aucun appareil
+    // pointé sur le LAN.
+    final normalized = stored?.trim().replaceAll(RegExp(r'/+$'), '');
+    if (normalized == null ||
+        normalized.isEmpty ||
+        normalized == _legacyDefaultServerUrl) {
+      return defaultServerUrl;
+    }
+    return stored!.trim();
+  }
 
   Future<void> saveServerUrl(String url) async =>
-      (await _prefs).setString(_kServerUrl, url);
+      (await _prefs).setString(_kServerUrl, url.trim());
 
   Future<List<Contact>> loadContacts() async {
     final raw = (await _prefs).getString(_kContacts);

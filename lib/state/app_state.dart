@@ -95,7 +95,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Charge la config runtime (Reverb + TURN) depuis le backend et la
+  /// Charge la config runtime (Pusher + TURN) depuis le backend et la
   /// partage avec la signalisation et le service d'appel.
   Future<void> refreshRuntimeConfig() async {
     final cfg = await api.fetchConfig();
@@ -103,7 +103,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       runtimeConfig = cfg;
       call.config = cfg;
       debugPrint('[YAM][CONFIG] TURN=${cfg.turnUrl.isNotEmpty ? "oui" : "non"} '
-          'Reverb=${cfg.reverbScheme}://${cfg.reverbHost}:${cfg.reverbPort}');
+          'Pusher=cluster ${cfg.pusherCluster} (clé ${cfg.pusherKey})');
     }
   }
 
@@ -131,6 +131,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     serverUrl = url.trim();
     await storage.saveServerUrl(serverUrl);
     notifyListeners();
+    // Ré-enregistre le device FCM auprès du nouveau serveur : sans cela, les
+    // appels entrants en arrière-plan/app fermée continueraient de pointer
+    // vers l'ancien serveur jusqu'au redémarrage de l'app.
+    await push.updateServerUrl(serverUrl);
     await reconnect();
   }
 

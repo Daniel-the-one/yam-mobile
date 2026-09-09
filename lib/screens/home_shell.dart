@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/call_service.dart';
 import '../services/signaling_service.dart';
+import '../services/storage_service.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import 'calls_screen.dart';
@@ -155,7 +156,9 @@ class _Header extends StatelessWidget {
           ),
           IconButton(
             tooltip: 'Adresse du serveur',
-            onPressed: () => _editServer(context),
+            onPressed: () => _editServer(context).catchError((Object e) {
+              debugPrint('[YAM][SERVER] Erreur changement d’adresse : $e');
+            }),
             icon: const Icon(Icons.settings_outlined, color: YamColors.muted),
           ),
         ],
@@ -164,30 +167,89 @@ class _Header extends StatelessWidget {
   }
 
   Future<void> _editServer(BuildContext context) async {
-    final ctrl = TextEditingController(text: app.serverUrl);
-    final ok = await showDialog<bool>(
+    final newUrl = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Adresse du serveur'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration:
-              const InputDecoration(hintText: 'http://192.168.1.80:8000'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Annuler')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Enregistrer')),
-        ],
-      ),
+      builder: (_) => _ServerUrlDialog(initialUrl: app.serverUrl),
     );
-    if (ok == true && ctrl.text.trim().isNotEmpty) {
-      await app.updateServerUrl(ctrl.text);
+    if (newUrl != null && newUrl.trim().isNotEmpty) {
+      await app.updateServerUrl(newUrl.trim());
     }
-    ctrl.dispose();
+  }
+}
+
+/// Dialog de saisie de l'adresse du serveur.
+///
+/// StatefulWidget dédié : le [TextEditingController] vit dans le State et est
+/// disposé quand le widget est réellement démonté (après l'animation de
+/// fermeture du dialog). Disposer le controller dans le parent juste après
+/// `showDialog` déclenche l'assertion `_dependents.isEmpty` (le TextField
+/// écoute encore le controller pendant la transition de sortie).
+class _ServerUrlDialog extends StatefulWidget {
+  const _ServerUrlDialog({required this.initialUrl});
+
+  final String initialUrl;
+
+  @override
+  State<_ServerUrlDialog> createState() => _ServerUrlDialogState();
+}
+
+class _ServerUrlDialogState extends State<_ServerUrlDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.initialUrl);
+    _ctrl.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.removeListener(_onChanged);
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _onChanged() => setState(() {});
+
+  /// Valide une URL de serveur : schéma http/https et hôte non vide.
+  bool _isValidUrl(String value) {
+    final uri = Uri.tryParse(value.trim());
+    return uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = _ctrl.text.trim();
+    final valid = _isValidUrl(text);
+    return AlertDialog(
+      title: const Text('Adresse du serveur'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        keyboardType: TextInputType.url,
+        autocorrect: false,
+        decoration: InputDecoration(
+          hintText: StorageService.defaultServerUrl,
+          // N'affiche l'erreur que si l'utilisateur a saisi quelque chose
+          // d'invalide (un champ vide au premier lancement n'est pas une
+          // erreur, mais « Enregistrer » reste désactivé).
+          errorText: text.isNotEmpty && !valid
+              ? 'URL invalide (ex. https://yam.mdkrlabs.dev)'
+              : null,
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annuler')),
+        FilledButton(
+            onPressed:
+                valid ? () => Navigator.pop(context, text) : null,
+            child: const Text('Enregistrer')),
+      ],
+    );
   }
 }
