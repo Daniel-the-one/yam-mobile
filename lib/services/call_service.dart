@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:vibration/vibration.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'api_client.dart';
 import 'runtime_config.dart';
@@ -79,6 +80,8 @@ class CallService extends ChangeNotifier {
     remoteName = targetName ?? clean;
     videoEnabled = video;
     notifyListeners();
+    // Garde l'écran allumé pendant la sonnerie sortante et l'appel.
+    unawaited(WakelockPlus.enable());
     try {
       final callId = await _api.ring(
         toUserId: clean,
@@ -148,6 +151,10 @@ class CallService extends ChangeNotifier {
     _answered = false;
     _answering = false;
     notifyListeners();
+
+    // Garde l'écran allumé pendant la sonnerie entrante (l'utilisateur doit
+    // voir l'appel et pouvoir décrocher même si l'écran allait s'éteindre).
+    unawaited(WakelockPlus.enable());
 
     unawaited(_startRingtone());
     unawaited(Vibration.hasVibrator().then((ok) {
@@ -373,6 +380,8 @@ class CallService extends ChangeNotifier {
   Future<void> teardown() async {
     _stopRing();
     unawaited(Vibration.cancel());
+    // L'appel est terminé : l'écran peut se rendormir.
+    unawaited(WakelockPlus.disable());
     _ringTimeout?.cancel();
     _disconnectGraceTimeout?.cancel();
     _disconnectGraceTimeout = null;

@@ -176,3 +176,55 @@ adb install -r build/app/outputs/flutter-apk/app-debug.apk
 
 **Important** : après une modification PHP, **redémarrer** `php artisan serve`
 (il ne recharge pas le code automatiquement).
+
+---
+
+## 7. Notifications en background + réveil de l'appareil (session 2026-09-09)
+
+### Problème
+1. Hors web / hors application, les appels ne déclenchaient **aucune notification**
+   → impossible de décrocher.
+2. L'appareil ne se réveillait pas quand il dormait.
+
+### Causes racines (diagnostic @api-debugger)
+| Cause | Détail |
+|-------|--------|
+| **Config cache périmée** | `php artisan config:cache` figeait `push.enabled=false` alors que `.env` avait `PUSH_ENABLED=true` → `notifyDevice()` retournait sans rien envoyer. |
+| **Service account non déployé** | `storage/firebase/service-account.json` est **gitignoré** → jamais déployé sur le serveur → FCM v1 impossible en prod. |
+| **`env()` au lieu de `config()`** | `PushService` lisait `env()` directement → retourne `null` quand le config est caché (prod) → service account introuvable. |
+| **`CallController.php` corrompu** | Parse error PHP (WIP cassé) → `ring()` 500 en local. |
+| **Aucun wake-lock** | Ni web (`navigator.wakeLock`) ni mobile (`wakelock_plus`) → l'écran s'éteignait pendant la sonnerie. |
+| **OEM agressifs** | TECNO/Infinix tuent les apps en background → FCM retardé/bloqué sans exemption batterie. |
+
+### Corrections
+
+#### Backend (`yam/api`)
+- `CallController.php` réécrit : `ring()` + `cancel()` propres, insertion `call_sessions`, résolution cible (user_id / phone / device), push avec `makeVisible`.
+- `CallCancelled.php` créé : broadcast `call-cancelled` sur **chaque appareil du destinataire** (canal `device.{toDeviceId}`).
+- `PushService.php` : `loadServiceAccount()` lit `config('yam.push.firebase_service_account_json')` (JSON brut ou base64) + cache ; `env()` → `config()` partout ; Web Push n'envoie plus de payload vide ; logs FCM sans body complet.
+- `config/yam.php` : sections `push.firebase_service_account_json` et `vapid.*`.
+- `routes/api.php` : route `ring` dédupliquée ; route debug `/v1/debug/logs` conditionnée à `APP_DEBUG=true`.
+- `.env.example` : `FIREBASE_SERVICE_ACCOUNT_JSON` documenté.
+
+#### Web (`yam/web`)
+- `js/spa-calls.js` : wake-lock (`navigator.wakeLock` acquire/release + re-acquisition au `visibilitychange`), `cancelCallViaApi()` (aligné sur la version déployée), timeout 45 s → annulation via API.
+- `manifest.json` : nettoyé (pas de champ non standard).
+
+#### Mobile (`yam-mobile`)
+- `pubspec.yaml` : + `wakelock_plus`.
+- `call_service.dart` : `WakelockPlus.enable()` au début d'appel (entrant + sortant), `disable()` dans `teardown()`.
+- `MainActivity.kt` : MethodChannel `yam/battery_optimization` (isIgnoring / requestIgnore / openBatterySettings).
+- `battery_optimization_service.dart` : wrapper Dart du channel.
+- `app_state.dart` : demande d'exemption batterie après login (une seule fois, flag `battery_exemption_dismissed`).
+- `AndroidManifest.xml` : + `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
+
+### Déploiement requis (prod — o2switch)
+1. **Backend** : déployer le backend PHP complet sur o2switch (app/, routes/, config/, database/migrations/, bootstrap/) — le `deploy.sh` ne pousse que `public/`.
+2. **Secret FCM** : configurer `FIREBASE_SERVICE_ACCOUNT_JSON` dans le `.env` serveur (contenu du service account en base64 : `base64 -w0 storage/firebase/service-account.json`) OU déposer `storage/firebase/service-account.json` sur le serveur.
+3. **Web** : `./deploy.sh yam js/spa-calls.js` (ou sync-web.sh) pour pousser le JS vers `api/public/`.
+4. **Mobile** : rebuild + réinstaller l'APK (`flutter build apk --debug`).
+
+### Vérification
+- Log backend : `[push] FCM v1 envoyé à device-xxx` (après un `ring`).
+- Mobile : `[YAM][PUSH][BG] Appel entrant en arrière-plan` + `Écran CallKit affiché`.
+- Écran : l'appareil se réveille (full-screen intent CallKit) et l'écran reste allumé pendant l'appel (wake-lock).

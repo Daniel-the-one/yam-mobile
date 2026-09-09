@@ -9,9 +9,8 @@ import 'helpers/native_mocks.dart';
 
 /// Fake d'ApiClient : enregistre les signaux envoyés et permet de piloter la
 /// réponse de `fetchDeferredOffer` (l'offre différée du serveur).
-class FakeApiClient implements ApiClient {
-  @override
-  String Function() baseUrlProvider = () => 'http://localhost';
+class FakeApiClient extends ApiClient {
+  FakeApiClient() : super(() => 'http://localhost');
 
   /// Résultat retourné par fetchDeferredOffer (null = offre introuvable).
   Map<String, dynamic>? deferredOfferResult;
@@ -40,14 +39,16 @@ class FakeApiClient implements ApiClient {
 
   @override
   Future<void> signal({
-    required String toDeviceId,
+    String? toDeviceId,
+    String? toUserId,
     required String fromDeviceId,
     required String type,
     required Map<String, dynamic> payload,
     String? callId,
   }) async {
     signals.add({
-      'to': toDeviceId,
+      'to': toDeviceId ?? toUserId,
+      'toUser': toUserId,
       'from': fromDeviceId,
       'type': type,
       'callId': callId,
@@ -57,7 +58,7 @@ class FakeApiClient implements ApiClient {
 
   @override
   Future<String?> ring({
-    required String toDeviceId,
+    required String toUserId,
     required String fromDeviceId,
     required String fromUsername,
     String type = 'audio',

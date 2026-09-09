@@ -25,6 +25,7 @@ class StorageService {
   static const _kAuthToken = 'auth_token';
   static const _kUserId = 'user_id';
   static const _kUserPhone = 'user_phone';
+  static const _kBatteryExemptionDismissed = 'battery_exemption_dismissed';
 
   Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
 
@@ -74,6 +75,14 @@ class StorageService {
     await p.remove(_kUserId);
     await p.remove(_kUserPhone);
   }
+
+  /// Vrai si l'utilisateur a déjà refusé (ou fermé) la demande d'exemption
+  /// batterie : on ne la re-propose pas à chaque session.
+  Future<bool> loadBatteryExemptionDismissed() async =>
+      (await _prefs).getBool(_kBatteryExemptionDismissed) ?? false;
+
+  Future<void> saveBatteryExemptionDismissed(bool dismissed) async =>
+      (await _prefs).setBool(_kBatteryExemptionDismissed, dismissed);
 
   Future<String> loadServerUrl() async {
     final p = await _prefs;

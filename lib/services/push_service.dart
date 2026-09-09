@@ -63,6 +63,7 @@ class PushService {
   String _serverUrl = '';
   String _deviceId = '';
   String _userName = '';
+  String _authToken = '';
 
   /// Initialise Firebase et enregistre le token FCM auprès du backend.
   /// Ne lève jamais d'exception : en cas d'échec, on journalise et on continue.
@@ -70,12 +71,14 @@ class PushService {
     required String serverUrl,
     required String deviceId,
     required String userName,
+    required String authToken,
     required void Function(Map<String, dynamic>) onIncomingCall,
     Future<void> Function()? onAcceptCall,
   }) async {
     _serverUrl = serverUrl;
     _deviceId = deviceId;
     _userName = userName;
+    _authToken = authToken;
     try {
       // `initializeApp` ne peut être appelé qu'une fois par app Firebase :
       // un second appel (changement d'URL en cours de session) lèverait
@@ -288,7 +291,10 @@ class PushService {
       final res = await http
           .post(
             Uri.parse('$base/api/v1/devices/register'),
-            headers: const {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              if (_authToken.isNotEmpty) 'Authorization': 'Bearer $_authToken',
+            },
             body: jsonEncode({
               'label': userName,
               'device_id': deviceId,

@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:permission_handler_platform_interface/permission_handler_platform_interface.dart';
 import 'package:vibration_platform_interface/vibration_platform_interface.dart';
+import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 /// Compteur des appels natifs WebRTC importants pour la logique testée.
 ///
@@ -52,6 +53,18 @@ class FakeVibrationPlatform extends VibrationPlatform {
 
   @override
   Future<void> cancel() async {}
+}
+
+class FakeWakelockPlatform extends WakelockPlusPlatformInterface {
+  bool enabledState = false;
+
+  @override
+  Future<void> toggle({required bool enable}) async {
+    enabledState = enable;
+  }
+
+  @override
+  Future<bool> get enabled async => enabledState;
 }
 
 /// Réponse native par défaut pour une méthode du channel flutter_webrtc.
@@ -162,8 +175,12 @@ void installNativeMocks(
     const MethodChannel('xyz.luan/audioplayers.global'),
     (call) async => null,
   );
-
+  messenger.setMockMethodCallHandler(
+    const MethodChannel('plugins.flutter.io/path_provider'),
+    (call) async => '/tmp/yam-mobile-test',
+  );
   // Plateformes natives remplacées par des fakes en mémoire.
   PermissionHandlerPlatform.instance = FakePermissionHandler();
   VibrationPlatform.instance = FakeVibrationPlatform();
+  WakelockPlusPlatformInterface.instance = FakeWakelockPlatform();
 }

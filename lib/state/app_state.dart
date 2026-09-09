@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/contact.dart';
 import '../models/missed_call.dart';
 import '../services/api_client.dart';
+import '../services/battery_optimization_service.dart';
 import '../services/call_service.dart';
 import '../services/push_service.dart';
 import '../services/runtime_config.dart';
@@ -22,6 +23,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final signaling = SignalingService();
   late final CallService call = CallService(api);
   final push = PushService();
+  final batteryOptimization = BatteryOptimizationService();
 
   String serverUrl = StorageService.defaultServerUrl;
   String deviceId = '';
@@ -218,11 +220,36 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       serverUrl: serverUrl,
       deviceId: deviceId,
       userName: userName,
+      authToken: authToken,
       onIncomingCall: call.handleIncomingCall,
       onAcceptCall: call.accept,
     ));
     await refreshRuntimeConfig();
     await reconnect();
+    // Les OEM (TECNO/Infinix/Xiaomi) tuent les apps en arrière-plan : sans
+    // exemption batterie, les notifications FCM d'appel entrant peuvent être
+    // retardées ou bloquées. On demande l'exemption une fois par session.
+    unawaited(_requestBatteryExemptionIfNeeded());
+  }
+
+  /// Demande l'exemption d'optimisation batterie si l'app n'est pas déjà
+  /// exemptée et que l'utilisateur ne l'a pas déjà refusée. Non bloquant :
+  /// en cas d'échec, l'utilisateur peut toujours l'activer manuellement.
+  Future<void> _requestBatteryExemptionIfNeeded() async {
+    try {
+      // Ne pas re-proposer si l'utilisateur a déjà fermé/refusé le dialog.
+      if (await storage.loadBatteryExemptionDismissed()) return;
+      final exempted = await batteryOptimization.isIgnoringBatteryOptimizations();
+      if (!exempted) {
+        debugPrint('[YAM][BATTERY] App non exemptée → demande d\'exemption');
+        await batteryOptimization.requestIgnoreBatteryOptimizations();
+        // On considère la demande faite (acceptée ou non) : on ne la
+        // re-propose pas à chaque session.
+        await storage.saveBatteryExemptionDismissed(true);
+      }
+    } catch (e) {
+      debugPrint('[YAM][BATTERY] Demande d\'exemption impossible : $e');
+    }
   }
 
   Future<List<Map<String, dynamic>>> searchUsers(String query) async {
